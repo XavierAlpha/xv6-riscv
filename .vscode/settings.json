@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "riscv.h": "c",
+        "user.h": "c",
+        "stat.h": "c",
+        "unistd.h": "c",
+        "syscall.h": "c",
+        "unistd_64.h": "c"
+    }
+}
