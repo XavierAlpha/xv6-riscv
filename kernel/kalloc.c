@@ -21,13 +21,13 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem; // 对end到PHYSTOP的物理空间进行按页大小划分，管理物理页
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  freerange(end, (void*)PHYSTOP); // 初始化end到PHYSTOP，而0到end永久保持在物理内存中不进行页划分
 }
 
 void
@@ -57,7 +57,7 @@ kfree(void *pa)
   r = (struct run*)pa;
 
   acquire(&kmem.lock);
-  r->next = kmem.freelist;
+  r->next = kmem.freelist; // ME:初始化end至PHYSTOP物理地址，以页为单位。并初始化kmem链表，kmem->freelist指向最后一个物理页，并依次链接低物理页
   kmem.freelist = r;
   release(&kmem.lock);
 }
@@ -73,7 +73,7 @@ kalloc(void)
   acquire(&kmem.lock);
   r = kmem.freelist;
   if(r)
-    kmem.freelist = r->next;
+    kmem.freelist = r->next; // kmem指向前一个物理页，r为当前最高地址物理页。问题：什么时候还会用到最高地址呢？
   release(&kmem.lock);
 
   if(r)

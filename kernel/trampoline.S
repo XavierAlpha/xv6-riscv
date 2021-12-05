@@ -14,7 +14,9 @@ trampoline:
 .align 4
 .globl uservec
 uservec:    
-	#
+	# 从 initcode.S执行ecall而来，执行ecall后，权限由User-mode上升至 S-mode进入内核态。
+        # satp之前设置为 Userpagetable。
+
         # trap.c sets stvec to point here, so
         # traps from user space start here,
         # in supervisor mode, but with a
@@ -60,20 +62,22 @@ uservec:
         sd t5, 272(a0)
         sd t6, 280(a0)
 
-	# save the user a0 in p->trapframe->a0
+	# save the user a0 in p->trapframe->a0 //刚刚的指令将a0和sscratch互换使用了a0,原a0值保存在sscrath中，这里复原a0至p->trapframe->a0
         csrr t0, sscratch
         sd t0, 112(a0)
 
-        # restore kernel stack pointer from p->trapframe->kernel_sp
+        # 从 User-mode 进入 S-mode需要用到内核态相关的数据，故借助 trap.c:118 中trapframe的kernel数据恢复至寄存器中,待而使用。
+        # restore kernel stack pointer from p->trapframe->kernel_sp //sp指向内核栈top！！！
         ld sp, 8(a0)
 
         # make tp hold the current hartid, from p->trapframe->kernel_hartid
         ld tp, 32(a0)
 
-        # load the address of usertrap(), p->trapframe->kernel_trap
+        # load the address of usertrap(), p->trapframe->kernel_trap //t0指向kernel_trap，即内核态要陷入的位置，即 usertrap()
         ld t0, 16(a0)
 
-        # restore kernel page table from p->trapframe->kernel_satp
+        # // satp从User页表变为使用内核页表。
+        # restore kernel page table from p->trapframe->kernel_satp // 这里,后面的sys_call会使用内核页表，故设置satp指向内核页表！！
         ld t1, 0(a0)
         csrw satp, t1
         sfence.vma zero, zero
@@ -81,7 +85,8 @@ uservec:
         # a0 is no longer valid, since the kernel page
         # table does not specially map p->tf.
 
-        # jump to usertrap(), which does not return
+        # 至此, 从initcode ecall后, U-mode 上升至 S-mode, satp指向内核页表kernelpagetable!!!!!!!
+        # jump to usertrap(), which does not return 
         jr t0
 
 .globl userret
@@ -93,7 +98,8 @@ userret:
         # a1: user page table, for satp.
 
         # switch to the user page table.
-        csrw satp, a1
+        csrw satp, a1                     # satp设置为使用User页表!!
+                                          #2从syscall回来后,User页表为新的页表
         sfence.vma zero, zero
 
         # put the saved user a0 in sscratch, so we
@@ -138,4 +144,7 @@ userret:
         
         # return to user mode and user pc.
         # usertrapret() set up sstatus and sepc.
-        sret
+        sret 
+        
+        # sret执行，sstatus表明从 S-mode进入 User-mode！！！, sepc表面 sret后进入initcode
+        #2 从syscall回来后, sret执行 从S-mode进入User-mode, sepc=elf.entry, sret后进入 elf.entry=init.c中的main!!

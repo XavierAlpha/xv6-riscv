@@ -17,12 +17,12 @@ extern char trampoline[]; // trampoline.S
 
 // Make a direct-map page table for the kernel.
 pagetable_t
-kvmmake(void)
+kvmmake(void) // 虚实映射
 {
-  pagetable_t kpgtbl;
+  pagetable_t kpgtbl; // 相当于页基址寄存器中的内容，指向页表所在的物理地址
 
-  kpgtbl = (pagetable_t) kalloc();
-  memset(kpgtbl, 0, PGSIZE);
+  kpgtbl = (pagetable_t) kalloc(); //从kmem中得到当前空闲最高地址处的一个物理页地址，作为(第一个内核)页表pagetable的保存位置(其中页表条目PTE放在后续的页中,PTE为CPU中的MMU进行地址转换所需)
+  memset(kpgtbl, 0, PGSIZE); // 初始化0
 
   // uart registers
   kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
@@ -41,10 +41,27 @@ kvmmake(void)
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  kvmmap(kpgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X); // 映射tramoline到最高物理页地址
+
+//----------------------------------------------------------------------------------------------------
+//【【【【【【kvmmpap建立映射后的 Kernel 虚拟地址空间如下】】】】】】
+// Kernel VM                                         |   PA
+// 00001000 -- boot ROM, provided by qemu            |   same as in PHYSIC
+// 02000000 -- CLINT                                 |   same as in PHYSIC
+// 0C000000 -- PLIC                                  |   same as in PHYSIC
+// 10000000 -- uart0                                 |   same as in PHYSIC
+// 10001000 -- virtio disk                           |   same as in PHYSIC
+// 80000000 -- boot ROM jumps here in machine mode   |   same as in PHYSIC
+// kernel etext                                      |   same as in PHYSIC
+//                                                   |
+// ....   unused                                     |
+//                                                   |
+// 64个进程的内核栈,占据64*2*PAGESIZE,紧接TRAMPOLINE   |   紧接PHYSTOP内核页表处的已经分配了的64个进程的位置(见下面物理地址空间分布)
+// TRAMPOLINE (MAXVM-PAGESIZE) 虚地址最大页面          |   (uint64)trampoline(in kernel etext somewhere)
+//------------------------------------------------------------------------------------------
 
   // map kernel stacks
-  proc_mapstacks(kpgtbl);
+  proc_mapstacks(kpgtbl); // 紧接着下一个页面开始连续设置64个进程的内核栈，每个大小两个页面
   
   return kpgtbl;
 }
@@ -53,7 +70,26 @@ kvmmake(void)
 void
 kvminit(void)
 {
-  kernel_pagetable = kvmmake();
+  kernel_pagetable = kvmmake(); // 内核页表和64个进程的内核栈设置完毕
+
+//--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布 , 设置了页表即建立了虚拟地址和物理地址的映射】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -192,12 +228,34 @@ pagetable_t
 uvmcreate()
 {
   pagetable_t pagetable;
-  pagetable = (pagetable_t) kalloc();
+  pagetable = (pagetable_t) kalloc(); // 紧邻userinit第一个user进程创建的trapframe页后创建一个user页表
   if(pagetable == 0)
     return 0;
-  memset(pagetable, 0, PGSIZE);
+  memset(pagetable, 0, PGSIZE); // 该页表初始化0
   return pagetable;
 }
+  //--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+// 紧邻userinit第一个user进程创建的trapframe页后创建一个user页表
+// userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
+
+
 
 // Load the user initcode into address 0 of pagetable,
 // for the very first process.
@@ -209,10 +267,41 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
-  mem = kalloc();
-  memset(mem, 0, PGSIZE);
-  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
-  memmove(mem, src, sz);
+  mem = kalloc(); // 分配物理页，放置initcode，紧接着userinit第一个user进程的trapframe页
+  memset(mem, 0, PGSIZE); //初始化0
+//--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+// mem一个页，目的(放置initcode)
+// userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
+
+  mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U); //建立第一个进程的user页映射 0 到 mem(initcode)
+//----------------------------------------------------------------------------------------------------
+//【【【【【【第一个用户进程建立映射后的 虚拟地址空间如下】】】】】】
+// Userinit VM                                       |   PA
+// 000000000                                         | mem(initcode)
+//                                                   |
+// ....   unused                                     |
+//                                                   |
+// TRAPFRAME                                         |   userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页(见物理地址空间)
+// TRAMPOLINE (MAXVM-PAGESIZE) 虚地址最大页面          |   (uint64)trampoline(in kernel etext somewhere)
+//------------------------------------------------------------------------------------------
+  memmove(mem, src, sz); //将initcode内容复制到相应的物理页中
 }
 
 // Allocate PTEs and physical memory to grow process from oldsz to

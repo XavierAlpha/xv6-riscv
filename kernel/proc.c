@@ -34,11 +34,11 @@ proc_mapstacks(pagetable_t kpgtbl) {
   struct proc *p;
   
   for(p = proc; p < &proc[NPROC]; p++) {
-    char *pa = kalloc();
+    char *pa = kalloc(); // 存放的物理地址选择紧接着内核页表的下一个低地址页面
     if(pa == 0)
       panic("kalloc");
-    uint64 va = KSTACK((int) (p - proc));
-    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    uint64 va = KSTACK((int) (p - proc)); // 64进程每个分配两页，一页作内核栈，一页为隔离保护栈。位置紧接 tramoline 下面
+    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W); // 进行内核页表的PTE填写，建立va pa映射
   }
 }
 
@@ -52,7 +52,7 @@ procinit(void)
   initlock(&wait_lock, "wait_lock");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-      p->kstack = KSTACK((int) (p - proc));
+      p->kstack = KSTACK((int) (p - proc)); //填写进程内核栈地址信息
   }
 }
 
@@ -117,18 +117,67 @@ allocproc(void)
   return 0;
 
 found:
-  p->pid = allocpid();
-  p->state = USED;
+  p->pid = allocpid(); //分配进程表示pid
+  p->state = USED;  //进程状态使用
 
-  // Allocate a trapframe page.
-  if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+  // Allocate a trapframe page. //trapframe是用户态使用的，而非内核态！！！
+  if((p->trapframe = (struct trapframe *)kalloc()) == 0){ //分配一个trapframe页，紧邻64个进程内核栈之后
     freeproc(p);
     release(&p->lock);
     return 0;
   }
+  //--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+// userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
+
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
+//--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布 】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+// 紧邻userinit第一个user进程创建的trapframe页后创建一个user页表 UserPagetable!!!
+// userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
+//----------------------------------------------------------------------------------------------------
+//【【【【【【第一个用户进程建立映射后的 虚拟地址空间如下】】】】】】
+// Userinit VM                                       |   PA
+//                                                   |
+// ....   unused                                     |
+//                                                   |
+// TRAPFRAME                                         |   userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页(见物理地址空间)
+// TRAMPOLINE (MAXVM-PAGESIZE) 虚地址最大页面          |   (uint64)trampoline(in kernel etext somewhere)
+//------------------------------------------------------------------------------------------
   if(p->pagetable == 0){
     freeproc(p);
     release(&p->lock);
@@ -137,9 +186,9 @@ found:
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
-  memset(&p->context, 0, sizeof(p->context));
-  p->context.ra = (uint64)forkret;
-  p->context.sp = p->kstack + PGSIZE;
+  memset(&p->context, 0, sizeof(p->context)); //第一个用户进程状态初始化0
+  p->context.ra = (uint64)forkret; // 该进程的返回地址为 forkret 进程
+  p->context.sp = p->kstack + PGSIZE; //p->kstack表示该进程的内核栈，但栈地址sp从高到低，所以sp指向高地址处
 
   return p;
 }
@@ -175,6 +224,26 @@ proc_pagetable(struct proc *p)
 
   // An empty page table.
   pagetable = uvmcreate();
+  //--------------------------------------------------------------------------------------
+// 【【【【【【此时的物理地址分布 】】】】】】
+// 00001000 -- boot ROM, provided by qemu
+// 02000000 -- CLINT
+// 0C000000 -- PLIC
+// 10000000 -- uart0 
+// 10001000 -- virtio disk 
+// 80000000 -- boot ROM jumps here in machine mode
+//             -kernel loads the kernel here
+// the kernel uses physical memory thus:
+// 80000000 -- entry.S, then kernel text and data
+// end -- start of kernel page allocation area
+
+// ...... unused RAM
+
+// 紧邻userinit第一个user进程创建的trapframe页后创建一个user页表 UserPagetable!!!
+// userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保存在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
+//--------------------------------------------------------------------------------------
   if(pagetable == 0)
     return 0;
 
@@ -183,19 +252,28 @@ proc_pagetable(struct proc *p)
   // only the supervisor uses it, on the way
   // to/from user space, so not PTE_U.
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
-              (uint64)trampoline, PTE_R | PTE_X) < 0){
+              (uint64)trampoline, PTE_R | PTE_X) < 0){ // 第一个用户页表作映射，VM TRAMPOLINE 到 PHY trampoline
     uvmfree(pagetable, 0);
     return 0;
   }
 
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){ // 第一个用户页表作映射，TRAPFRAME到 p->trapframe。其中 VM TRAMPOLINE和VM TRAPFRAME差一个页，紧邻关系
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
   }
 
+//----------------------------------------------------------------------------------------------------
+//【【【【【【第一个用户进程建立映射后的 虚拟地址空间如下】】】】】】
+// Userinit VM                                       |   PA
+//                                                   |
+// ....   unused                                     |
+//                                                   |
+// TRAPFRAME                                         |   userinit第一个user进程分配的trapframe页，紧邻64进程内核栈页(见物理地址空间)
+// TRAMPOLINE (MAXVM-PAGESIZE) 虚地址最大页面          |   (uint64)trampoline(in kernel etext somewhere)
+//------------------------------------------------------------------------------------------
   return pagetable;
 }
 
@@ -228,21 +306,21 @@ userinit(void)
   struct proc *p;
 
   p = allocproc();
-  initproc = p;
+  initproc = p;  //设置第一个进程
   
   // allocate one user page and copy init's instructions
   // and data into it.
-  uvminit(p->pagetable, initcode, sizeof(initcode));
-  p->sz = PGSIZE;
+  uvminit(p->pagetable, initcode, sizeof(initcode)); // 注意这里设置用户页，内核页之前已经设置好
+  p->sz = PGSIZE; // 页为单位，该进程使用一个页大小,尽管initcode小于一个页
 
-  // prepare for the very first "return" from kernel to user.
-  p->trapframe->epc = 0;      // user program counter
-  p->trapframe->sp = PGSIZE;  // user stack pointer
+  // prepare for the very first "return" from kernel to user. //trapframe是用户态使用的，内核态不使用！！！
+  p->trapframe->epc = 0;      // user program counter  //user程序计数器虚拟地址
+  p->trapframe->sp = PGSIZE;  // user stack pointer   // 设置栈地址
 
-  safestrcpy(p->name, "initcode", sizeof(p->name));
-  p->cwd = namei("/");
+  safestrcpy(p->name, "initcode", sizeof(p->name)); // 修正进程名称
+  p->cwd = namei("/"); // 进程cwd
 
-  p->state = RUNNABLE;
+  p->state = RUNNABLE; // 进程状态，可运行
 
   release(&p->lock);
 }
@@ -451,9 +529,11 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+        p->state = RUNNING; // 准备第一个进程运行
+        c->proc = p; //分配进程
+        swtch(&c->context, &p->context); //第一个进程的上下文写入CPU上下文,ra=forkret,sp
+        //ME:所有进程先进入forkret,在内核态，内核栈地址 sp指定p->kstack+PAGESIZE
+        //备注：此时还握锁
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -510,17 +590,17 @@ forkret(void)
   static int first = 1;
 
   // Still holding p->lock from scheduler.
-  release(&myproc()->lock);
+  release(&myproc()->lock); // 放锁
 
   if (first) {
     // File system initialization must be run in the context of a
     // regular process (e.g., because it calls sleep), and thus cannot
     // be run from main().
     first = 0;
-    fsinit(ROOTDEV);
+    fsinit(ROOTDEV); //初始化文件系统
   }
 
-  usertrapret();
+  usertrapret();  // 从内核态陷入！
 }
 
 // Atomically release lock and sleep on chan.

@@ -8,13 +8,14 @@
 #include "defs.h"
 
 // Fetch the uint64 at addr from the current process.
+//从vm=addr，User页表。复制数据到 ip 长度(*ip所至数据大小)
 int
 fetchaddr(uint64 addr, uint64 *ip)
 {
   struct proc *p = myproc();
   if(addr >= p->sz || addr+sizeof(uint64) > p->sz)
     return -1;
-  if(copyin(p->pagetable, (char *)ip, addr, sizeof(*ip)) != 0)
+  if(copyin(p->pagetable, (char *)ip, addr, sizeof(*ip)) != 0) 
     return -1;
   return 0;
 }
@@ -135,9 +136,10 @@ syscall(void)
   int num;
   struct proc *p = myproc();
 
-  num = p->trapframe->a7;
+  num = p->trapframe->a7; // a7存储了SYS_xxx 系统调用号(由usys.pl生成指令)
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
-    p->trapframe->a0 = syscalls[num]();
+    p->trapframe->a0 = syscalls[num](); // syscalls[num]为函数地址,第一个进程使用 SYS_exec,然后()执行，进入 sys_exec()
+    // 返回 argc,保持在a0中
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

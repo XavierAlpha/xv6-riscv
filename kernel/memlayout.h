@@ -15,6 +15,9 @@
 // the kernel uses physical memory thus:
 // 80000000 -- entry.S, then kernel text and data
 // end -- start of kernel page allocation area
+
+//ME: 紧接着是 为64个进程分配的内核栈，每个占据两个页面 64*PAGESIZE*2
+//ME: 内核的页表保持在最高地址处,占用大小一个页面 1*PAGESIZE       //PHYSTOP
 // PHYSTOP -- end RAM used by the kernel
 
 // qemu puts UART registers here in physical memory.
